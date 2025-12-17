@@ -1,0 +1,27 @@
+# Ігнорувати віртуальне середовище
+venv/
+env/
+ENV/
+
+# Ігнорувати файли Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Ігнорувати файли конфігурації
+.env
+.env.local
+
+
+# Ігнорувати файли IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ігнорувати системні файли
+.DS_Store
+Thumbs.db
