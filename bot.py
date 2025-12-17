@@ -29,6 +29,33 @@ def send_error(chat_id, msg_id, text):
     bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=f"❌ {text}")
 
 
+def download_telegram_file(file_id):
+    """Download file from Telegram and return bytes"""
+    file_info = bot.get_file(file_id)
+    return bot.download_file(file_info.file_path)
+
+
+def create_file_buffer(data, filename):
+    """Create BytesIO buffer with name for Telegram"""
+    buffer = io.BytesIO(data)
+    buffer.name = filename
+    return buffer
+
+
+def validate_content(msg, content_type, error_msg):
+    """Validate message has required content"""
+    validators = {
+        'photo': lambda m: m.photo,
+        'voice': lambda m: m.voice,
+        'text': lambda m: m.text and m.text.strip()
+    }
+    
+    if not validators.get(content_type, lambda m: False)(msg):
+        bot.reply_to(msg, f"❌ {error_msg}")
+        return False
+    return True
+
+
 def detect_contours(image_data):
     """Detect object contours using OpenCV"""
     nparr = np.frombuffer(image_data, np.uint8)
@@ -131,14 +158,11 @@ def cmd_translate(msg):
 
 
 def handle_voice(msg):
-    if not msg.voice:
-        bot.reply_to(msg, "❌ Voice message required")
+    if not validate_content(msg, 'voice', 'Voice message required'):
         return
     
     try:
-        file_info = bot.get_file(msg.voice.file_id)
-        voice_data = bot.download_file(file_info.file_path)
-        
+        voice_data = download_telegram_file(msg.voice.file_id)
         bot.send_message(msg.chat.id, f"🌐 Language: {', '.join(LANGUAGES.keys())}")
         bot.register_next_step_handler(msg, handle_translation, voice_data)
     except Exception as e:
@@ -156,8 +180,7 @@ def handle_translation(msg, voice_data):
     
     try:
         # Transcribe
-        voice_file = io.BytesIO(voice_data)
-        voice_file.name = "audio.ogg"
+        voice_file = create_file_buffer(voice_data, "audio.ogg")
         original = client.audio.transcriptions.create(
             model="whisper-1",
             file=voice_file
@@ -193,14 +216,11 @@ def cmd_convert(msg):
 
 
 def handle_convert_image(msg):
-    if not msg.photo:
-        bot.reply_to(msg, "❌ Image required")
+    if not validate_content(msg, 'photo', 'Image required'):
         return
     
     try:
-        file_info = bot.get_file(msg.photo[-1].file_id)
-        image_data = bot.download_file(file_info.file_path)
-        
+        image_data = download_telegram_file(msg.photo[-1].file_id)
         bot.send_message(msg.chat.id, "📁 Format? (JPEG or PNG):")
         bot.register_next_step_handler(msg, handle_target_format, image_data)
     except Exception as e:
@@ -218,8 +238,7 @@ def handle_target_format(msg, image_data):
     
     try:
         result_data = convert_image_format(image_data, target_format)
-        result_file = io.BytesIO(result_data)
-        result_file.name = f"converted.{target_format.lower()}"
+        result_file = create_file_buffer(result_data, f"converted.{target_format.lower()}")
         
         bot.delete_message(msg.chat.id, proc_msg.message_id)
         bot.send_document(msg.chat.id, result_file, caption=f"✅ Converted to {target_format}")
@@ -234,29 +253,18 @@ def cmd_detect(msg):
 
 
 def handle_image(msg):
-    if not msg.photo:
-        bot.reply_to(msg, "❌ Image required")
+    if not validate_content(msg, 'photo', 'Image required'):
         return
     
     proc_msg = bot.send_message(msg.chat.id, "⏳ Detecting contours...")
     
     try:
-        file_info = bot.get_file(msg.photo[-1].file_id)
-        image_data = bot.download_file(file_info.file_path)
-        
-        # Detect contours
+        image_data = download_telegram_file(msg.photo[-1].file_id)
         result_image, count = detect_contours(image_data)
-        
-        # Send result
-        result_file = io.BytesIO(result_image)
-        result_file.name = "contours.jpg"
+        result_file = create_file_buffer(result_image, "contours.jpg")
         
         bot.delete_message(msg.chat.id, proc_msg.message_id)
-        bot.send_photo(
-            msg.chat.id,
-            result_file,
-            caption=f"✅ Found {count} contours"
-        )
+        bot.send_photo(msg.chat.id, result_file, caption=f"✅ Found {count} contours")
     except Exception as e:
         send_error(msg.chat.id, proc_msg.message_id, str(e))
 if __name__ == '__main__':
