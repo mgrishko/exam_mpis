@@ -3,6 +3,9 @@ import telebot
 from openai import OpenAI
 from dotenv import load_dotenv
 import io
+import cv2
+import numpy as np
+from PIL import Image
 
 # Load environment variables
 load_dotenv()
@@ -26,13 +29,56 @@ def send_error(chat_id, msg_id, text):
     bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=f"❌ {text}")
 
 
+def detect_contours(image_data):
+    """Detect object contours using OpenCV"""
+    nparr = np.frombuffer(image_data, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if img is None:
+        raise ValueError("Could not decode image")
+    
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # Apply threshold
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    
+    # Find contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Draw contours on image
+    result = img.copy()
+    cv2.drawContours(result, contours, -1, (0, 255, 0), 2)
+    
+    # Encode result image
+    _, buffer = cv2.imencode('.jpg', result)
+    
+    return buffer.tobytes(), len(contours)
+
+
+def convert_image_format(image_data, target_format):
+    """Convert image format using Pillow"""
+    img = Image.open(io.BytesIO(image_data))
+    
+    # Convert RGBA to RGB for JPEG
+    if target_format.upper() == 'JPEG' and img.mode == 'RGBA':
+        img = img.convert('RGB')
+    
+    output = io.BytesIO()
+    img.save(output, format=target_format.upper())
+    output.seek(0)
+    return output.getvalue()
+
+
 # Commands
 @bot.message_handler(commands=['start'])
 def cmd_start(msg):
     text = (
         "👋 *Bot Commands*\n\n"
         "📝 /summarize - Summarize text\n"
-        "🌐 /translate - Translate voice\n\n"
+        "🌐 /translate - Translate voice\n"
+        "📸 /detect - Detect contours\n"
+        "📸 /convert - Convert image (JPEG ↔ PNG)\n\n"
         f"Languages: {', '.join(LANGUAGES.keys())}"
     )
     bot.send_message(msg.chat.id, text, parse_mode="Markdown")
@@ -140,7 +186,79 @@ def handle_translation(msg, voice_data):
         send_error(msg.chat.id, proc_msg.message_id, str(e))
 
 
-# Run
+@bot.message_handler(commands=['convert'])
+def cmd_convert(msg):
+    bot.send_message(msg.chat.id, "📸 Send image to convert:")
+    bot.register_next_step_handler(msg, handle_convert_image)
+
+
+def handle_convert_image(msg):
+    if not msg.photo:
+        bot.reply_to(msg, "❌ Image required")
+        return
+    
+    try:
+        file_info = bot.get_file(msg.photo[-1].file_id)
+        image_data = bot.download_file(file_info.file_path)
+        
+        bot.send_message(msg.chat.id, "📁 Format? (JPEG or PNG):")
+        bot.register_next_step_handler(msg, handle_target_format, image_data)
+    except Exception as e:
+        bot.reply_to(msg, f"❌ {str(e)}")
+
+
+def handle_target_format(msg, image_data):
+    target_format = msg.text.strip().upper()
+    
+    if target_format not in ['JPEG', 'PNG']:
+        bot.reply_to(msg, "❌ Use: JPEG or PNG")
+        return
+    
+    proc_msg = bot.send_message(msg.chat.id, "⏳ Converting...")
+    
+    try:
+        result_data = convert_image_format(image_data, target_format)
+        result_file = io.BytesIO(result_data)
+        result_file.name = f"converted.{target_format.lower()}"
+        
+        bot.delete_message(msg.chat.id, proc_msg.message_id)
+        bot.send_document(msg.chat.id, result_file, caption=f"✅ Converted to {target_format}")
+    except Exception as e:
+        send_error(msg.chat.id, proc_msg.message_id, str(e))
+
+
+@bot.message_handler(commands=['detect'])
+def cmd_detect(msg):
+    bot.send_message(msg.chat.id, "📸 Send image to detect contours:")
+    bot.register_next_step_handler(msg, handle_image)
+
+
+def handle_image(msg):
+    if not msg.photo:
+        bot.reply_to(msg, "❌ Image required")
+        return
+    
+    proc_msg = bot.send_message(msg.chat.id, "⏳ Detecting contours...")
+    
+    try:
+        file_info = bot.get_file(msg.photo[-1].file_id)
+        image_data = bot.download_file(file_info.file_path)
+        
+        # Detect contours
+        result_image, count = detect_contours(image_data)
+        
+        # Send result
+        result_file = io.BytesIO(result_image)
+        result_file.name = "contours.jpg"
+        
+        bot.delete_message(msg.chat.id, proc_msg.message_id)
+        bot.send_photo(
+            msg.chat.id,
+            result_file,
+            caption=f"✅ Found {count} contours"
+        )
+    except Exception as e:
+        send_error(msg.chat.id, proc_msg.message_id, str(e))
 if __name__ == '__main__':
     print("🤖 Bot started...")
     bot.infinity_polling()
